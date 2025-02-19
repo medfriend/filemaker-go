@@ -8,6 +8,7 @@ import (
 	"github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"github.com/medfriend/shared-commons-go/util/consul"
 	"github.com/medfriend/shared-commons-go/util/env"
+	"github.com/medfriend/shared-commons-go/util/rabbitmq"
 	"github.com/minio/minio-go/v7"
 	"github.com/pebbe/zmq4"
 	"io/ioutil"
@@ -21,7 +22,7 @@ func main() {
 
 	consulClient := consul.ConnectToConsulKey("", "FILEMAKER")
 
-	resultServiceInfo, minioClient := util.ConnectionsConsul(consulClient)
+	resultServiceInfo, minioClient, rabbitCon := util.ConnectionsConsul(consulClient)
 
 	zmqPort := resultServiceInfo["SERVICE_PORT"]
 	zmpHost := resultServiceInfo["SERVICE_PATH"]
@@ -42,11 +43,6 @@ func main() {
 
 	fmt.Println(fmt.Sprintf("Connected to %s", zmqConn))
 
-	pdfg, err := wkhtmltopdf.NewPDFGenerator()
-	if err != nil {
-		log.Fatalln(err)
-	}
-
 	// Escuchar mensajes
 
 	for {
@@ -65,12 +61,10 @@ func main() {
 		var replace map[string]string
 		err = json.Unmarshal([]byte(msgObject["message"]), &replace)
 
-		if err != nil {
-			return
-		}
-
 		bucketName := replace["bucketOrigen"]
 		objectName := replace["plantilla"]
+
+		fmt.Println(replace)
 
 		// Obtener el objeto
 		ctx := context.Background()
@@ -90,6 +84,11 @@ func main() {
 		// Reemplazar las etiquetas con los valores del mapa
 		for key, value := range replace {
 			content = strings.ReplaceAll(content, key, value)
+		}
+
+		pdfg, err := wkhtmltopdf.NewPDFGenerator()
+		if err != nil {
+			log.Fatalln(err)
 		}
 
 		pdfg.AddPage(wkhtmltopdf.NewPageReader(strings.NewReader(content)))
@@ -130,6 +129,13 @@ func main() {
 			log.Printf("Archivo temporal eliminado exitosamente\n")
 		}
 
-		fmt.Printf("PDF uploaded successfully: %s/%s\n", replace["bucketDestino"], objectName)
+		filename := fmt.Sprintf("%s/%s", replace["bucketDestino"], objectName)
+
+		rabbit := rabbitmq.GetInstance(rabbitCon)
+
+		//fmt.Println(rabbit)
+		rabbit.SendMessage(msgObject["user"], filename, rabbitCon)
+
+		fmt.Printf("PDF uploaded successfully: %s\n", filename)
 	}
 }
